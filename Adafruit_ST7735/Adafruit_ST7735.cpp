@@ -17,7 +17,6 @@
  ****************************************************/
 
 #include "Adafruit_ST7735.h"
-#include <avr/pgmspace.h>
 #include <limits.h>
 #include "pins_arduino.h"
 #include "wiring_private.h"
@@ -52,7 +51,11 @@ Adafruit_ST7735::Adafruit_ST7735(uint8_t cs, uint8_t rs, uint8_t rst) :
   _sid  = _sclk = 0;
 }
 
+#if defined(CORE_TEENSY) && !defined(__AVR__)
+#define __AVR__
+#endif
 
+#ifdef __AVR__
 inline void Adafruit_ST7735::spiwrite(uint8_t c) {
 
   //Serial.println(c, HEX);
@@ -92,6 +95,48 @@ void Adafruit_ST7735::writedata(uint8_t c) {
 
   *csport |= cspinmask;
 } 
+#endif //#ifdef __AVR__
+
+#if defined(__SAM3X8E__)
+inline void Adafruit_ST7735::spiwrite(uint8_t c) {
+  
+  //Serial.println(c, HEX);
+  
+  if (hwSPI) {
+    SPI.transfer(c);
+  } else {
+    // Fast SPI bitbang swiped from LPD8806 library
+    for(uint8_t bit = 0x80; bit; bit >>= 1) {
+      if(c & bit) dataport->PIO_SODR |= datapinmask;
+      else        dataport->PIO_CODR |= datapinmask;
+      clkport->PIO_SODR |= clkpinmask;
+      clkport->PIO_CODR |= clkpinmask;
+    }
+  }
+}
+
+
+void Adafruit_ST7735::writecommand(uint8_t c) {
+  rsport->PIO_CODR |=  rspinmask;
+  csport->PIO_CODR  |=  cspinmask;
+  
+  //Serial.print("C ");
+  spiwrite(c);
+  
+  csport->PIO_SODR  |=  cspinmask;
+}
+
+
+void Adafruit_ST7735::writedata(uint8_t c) {
+  rsport->PIO_SODR |=  rspinmask;
+  csport->PIO_CODR  |=  cspinmask;
+  
+  //Serial.print("D ");
+  spiwrite(c);
+  
+  csport->PIO_SODR  |=  cspinmask;
+} 
+#endif //#if defined(__SAM3X8E__)
 
 
 // Rather than a bazillion writecommand() and writedata() calls, screen
@@ -100,7 +145,7 @@ void Adafruit_ST7735::writedata(uint8_t c) {
 // formatting -- storage-wise this is hundreds of bytes more compact
 // than the equivalent code.  Companion function follows.
 #define DELAY 0x80
-PROGMEM static prog_uchar
+static const uint8_t PROGMEM
   Bcmd[] = {                  // Initialization commands for 7735B screens
     18,                       // 18 commands in list:
     ST7735_SWRESET,   DELAY,  //  1: Software reset, no args, w/delay
@@ -234,7 +279,7 @@ PROGMEM static prog_uchar
 
 // Companion code to the above tables.  Reads and issues
 // a series of LCD commands stored in PROGMEM byte array.
-void Adafruit_ST7735::commandList(uint8_t *addr) {
+void Adafruit_ST7735::commandList(const uint8_t *addr) {
 
   uint8_t  numCommands, numArgs;
   uint16_t ms;
@@ -259,34 +304,64 @@ void Adafruit_ST7735::commandList(uint8_t *addr) {
 
 
 // Initialization code common to both 'B' and 'R' type displays
-void Adafruit_ST7735::commonInit(uint8_t *cmdList) {
+void Adafruit_ST7735::commonInit(const uint8_t *cmdList) {
   colstart  = rowstart = 0; // May be overridden in init func
 
   pinMode(_rs, OUTPUT);
   pinMode(_cs, OUTPUT);
+#ifdef __AVR__
   csport    = portOutputRegister(digitalPinToPort(_cs));
-  cspinmask = digitalPinToBitMask(_cs);
   rsport    = portOutputRegister(digitalPinToPort(_rs));
+#endif
+#if defined(__SAM3X8E__)
+  csport    = digitalPinToPort(_cs);
+  rsport    = digitalPinToPort(_rs);
+#endif
+  cspinmask = digitalPinToBitMask(_cs);
   rspinmask = digitalPinToBitMask(_rs);
 
   if(hwSPI) { // Using hardware SPI
     SPI.begin();
+#ifdef __AVR__
     SPI.setClockDivider(SPI_CLOCK_DIV4); // 4 MHz (half speed)
+    //Due defaults to 4mHz (clock divider setting of 21)
+#endif
+#if defined(__SAM3X8E__)
+    SPI.setClockDivider(21); // 4 MHz
+    //Due defaults to 4mHz (clock divider setting of 21), but we'll set it anyway 
+#endif
     SPI.setBitOrder(MSBFIRST);
     SPI.setDataMode(SPI_MODE0);
   } else {
     pinMode(_sclk, OUTPUT);
     pinMode(_sid , OUTPUT);
+#ifdef __AVR__
     clkport     = portOutputRegister(digitalPinToPort(_sclk));
-    clkpinmask  = digitalPinToBitMask(_sclk);
     dataport    = portOutputRegister(digitalPinToPort(_sid));
+#endif
+#if defined(__SAM3X8E__)
+    clkport     = digitalPinToPort(_sclk);
+    dataport    = digitalPinToPort(_sid);
+#endif
+    clkpinmask  = digitalPinToBitMask(_sclk);
     datapinmask = digitalPinToBitMask(_sid);
+#ifdef __AVR__
     *clkport   &= ~clkpinmask;
     *dataport  &= ~datapinmask;
+#endif
+#if defined(__SAM3X8E__)
+    clkport ->PIO_CODR  |=  clkpinmask; // Set control bits to LOW (idle)
+    dataport->PIO_CODR  |=  datapinmask; // Signals are ACTIVE HIGH
+#endif
   }
 
   // toggle RST low to reset; CS low so it'll listen to us
+#ifdef __AVR__
   *csport &= ~cspinmask;
+#endif
+#if defined(__SAM3X8E__)
+  csport ->PIO_CODR  |=  cspinmask; // Set control bits to LOW (idle)
+#endif
   if (_rst) {
     pinMode(_rst, OUTPUT);
     digitalWrite(_rst, HIGH);
@@ -350,13 +425,24 @@ void Adafruit_ST7735::setAddrWindow(uint8_t x0, uint8_t y0, uint8_t x1,
 
 
 void Adafruit_ST7735::pushColor(uint16_t color) {
+#ifdef __AVR__
   *rsport |=  rspinmask;
   *csport &= ~cspinmask;
-
+#endif
+#if defined(__SAM3X8E__)
+  rsport->PIO_SODR |=  rspinmask;
+  csport->PIO_CODR  |=  cspinmask;
+#endif
+  
   spiwrite(color >> 8);
   spiwrite(color);
 
+#ifdef __AVR__
   *csport |= cspinmask;
+#endif
+#if defined(__SAM3X8E__)
+  csport->PIO_SODR  |=  cspinmask;
+#endif
 }
 
 void Adafruit_ST7735::drawPixel(int16_t x, int16_t y, uint16_t color) {
@@ -365,13 +451,24 @@ void Adafruit_ST7735::drawPixel(int16_t x, int16_t y, uint16_t color) {
 
   setAddrWindow(x,y,x+1,y+1);
 
+#ifdef __AVR__
   *rsport |=  rspinmask;
   *csport &= ~cspinmask;
-
+#endif
+#if defined(__SAM3X8E__)
+  rsport->PIO_SODR |=  rspinmask;
+  csport->PIO_CODR  |=  cspinmask;
+#endif
+  
   spiwrite(color >> 8);
   spiwrite(color);
 
+#ifdef __AVR__
   *csport |= cspinmask;
+#endif
+#if defined(__SAM3X8E__)
+  csport->PIO_SODR  |=  cspinmask;
+#endif
 }
 
 
@@ -384,13 +481,24 @@ void Adafruit_ST7735::drawFastVLine(int16_t x, int16_t y, int16_t h,
   setAddrWindow(x, y, x, y+h-1);
 
   uint8_t hi = color >> 8, lo = color;
+#ifdef __AVR__
   *rsport |=  rspinmask;
   *csport &= ~cspinmask;
+#endif
+#if defined(__SAM3X8E__)
+  rsport->PIO_SODR |=  rspinmask;
+  csport->PIO_CODR  |=  cspinmask;
+#endif
   while (h--) {
     spiwrite(hi);
     spiwrite(lo);
   }
+#ifdef __AVR__
   *csport |= cspinmask;
+#endif
+#if defined(__SAM3X8E__)
+  csport->PIO_SODR  |=  cspinmask;
+#endif
 }
 
 
@@ -403,13 +511,24 @@ void Adafruit_ST7735::drawFastHLine(int16_t x, int16_t y, int16_t w,
   setAddrWindow(x, y, x+w-1, y);
 
   uint8_t hi = color >> 8, lo = color;
+#ifdef __AVR__
   *rsport |=  rspinmask;
   *csport &= ~cspinmask;
+#endif
+#if defined(__SAM3X8E__)
+  rsport->PIO_SODR |=  rspinmask;
+  csport->PIO_CODR  |=  cspinmask;
+#endif
   while (w--) {
     spiwrite(hi);
     spiwrite(lo);
   }
+#ifdef __AVR__
   *csport |= cspinmask;
+#endif
+#if defined(__SAM3X8E__)
+  csport->PIO_SODR  |=  cspinmask;
+#endif
 }
 
 
@@ -432,8 +551,14 @@ void Adafruit_ST7735::fillRect(int16_t x, int16_t y, int16_t w, int16_t h,
   setAddrWindow(x, y, x+w-1, y+h-1);
 
   uint8_t hi = color >> 8, lo = color;
+#ifdef __AVR__
   *rsport |=  rspinmask;
   *csport &= ~cspinmask;
+#endif
+#if defined(__SAM3X8E__)
+  rsport->PIO_SODR |=  rspinmask;
+  csport->PIO_CODR  |=  cspinmask;
+#endif
   for(y=h; y>0; y--) {
     for(x=w; x>0; x--) {
       spiwrite(hi);
@@ -441,7 +566,12 @@ void Adafruit_ST7735::fillRect(int16_t x, int16_t y, int16_t w, int16_t h,
     }
   }
 
+#ifdef __AVR__
   *csport |= cspinmask;
+#endif
+#if defined(__SAM3X8E__)
+  csport->PIO_SODR  |=  cspinmask;
+#endif
 }
 
 

@@ -2,6 +2,8 @@
   Emon.cpp - Library for openenergymonitor
   Created by Trystan Lea, April 27 2010
   GNU GPL
+  modified to use up to 12 bits ADC resolution (ex. Arduino Due)
+  by boredman@boredomprojects.net 26.12.2013
 */
 
 //#include "WProgram.h" un-comment for use on older versions of Arduino IDE
@@ -78,7 +80,7 @@ void EnergyMonitor::calcVI(int crossings, int timeout)
   while(st==false)                                   //the while loop...
   {
      startV = analogRead(inPinV);                    //using the voltage waveform
-     if ((startV < 550) && (startV > 440)) st=true;  //check its within range
+     if ((startV < (ADC_COUNTS/2+50)) && (startV > (ADC_COUNTS/2-50))) st=true;  //check its within range
      if ((millis()-start)>timeout) st = true;
   }
   
@@ -151,10 +153,10 @@ void EnergyMonitor::calcVI(int crossings, int timeout)
   //Calculation of the root of the mean of the voltage and current squared (rms)
   //Calibration coeficients applied. 
   
-  double V_RATIO = VCAL *((SUPPLYVOLTAGE/1000.0) / 1023.0);
+  double V_RATIO = VCAL *((SUPPLYVOLTAGE/1000.0) / (ADC_COUNTS));
   Vrms = V_RATIO * sqrt(sumV / numberOfSamples); 
   
-  double I_RATIO = ICAL *((SUPPLYVOLTAGE/1000.0) / 1023.0);
+  double I_RATIO = ICAL *((SUPPLYVOLTAGE/1000.0) / (ADC_COUNTS));
   Irms = I_RATIO * sqrt(sumI / numberOfSamples); 
 
   //Calculation power values
@@ -194,7 +196,7 @@ double EnergyMonitor::calcIrms(int NUMBER_OF_SAMPLES)
     sumI += sqI;
   }
 
-  double I_RATIO = ICAL *((SUPPLYVOLTAGE/1000.0) / 1023.0);
+  double I_RATIO = ICAL *((SUPPLYVOLTAGE/1000.0) / (ADC_COUNTS));
   Irms = I_RATIO * sqrt(sumI / NUMBER_OF_SAMPLES); 
 
   //Reset accumulators
@@ -229,7 +231,7 @@ long EnergyMonitor::readVcc() {
 
   #if defined(__AVR_ATmega168__) || defined(__AVR_ATmega328__) || defined (__AVR_ATmega328P__)
   ADMUX = _BV(REFS0) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);  
-  #elif defined(__AVR_ATmega32U4__) || defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
+  #elif defined(__AVR_ATmega32U4__) || defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__) || defined(__AVR_AT90USB1286__)
   ADMUX = _BV(REFS0) | _BV(MUX4) | _BV(MUX3) | _BV(MUX2) | _BV(MUX1);
   ADCSRB &= ~_BV(MUX5);   // Without this the function always returns -1 on the ATmega2560 http://openenergymonitor.org/emon/node/2253#comment-11432
   #elif defined (__AVR_ATtiny24__) || defined(__AVR_ATtiny44__) || defined(__AVR_ATtiny84__)
